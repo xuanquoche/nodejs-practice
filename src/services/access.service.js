@@ -6,7 +6,8 @@ const crypto = require("node:crypto");
 const KeyTokenService = require("./keyToken.service");
 const { createTokenPair } = require("../auth/authUtils");
 const { getInfoData } = require("../utils");
-const { BadRequestError } = require("../core/error.response");
+const { BadRequestError, AuthFailureError } = require("../core/error.response");
+const { findByEmail } = require("./shop.service");
 
 const RoleShop = {
   SHOP: "SHOP",
@@ -16,6 +17,40 @@ const RoleShop = {
 };
 
 class AccessService {
+  static login = async ({ email, password, refreshToken = null }) => {
+    // step 1: check mail in db
+    const foundShop = await findByEmail({ email });
+    if (!foundShop) throw BadRequestError("Shop not registered");
+    // step 2: match password
+    const match = bcrypt.compare(password, foundShop.password);
+    if (!match) throw new AuthFailureError("");
+    // create privatekey, publickey
+    const privateKey = crypto.randomBytes(64).toString("hex");
+    const publicKey = crypto.randomBytes(64).toString("hex");
+    // step 4 generate tokens
+    const { _id: userId } = foundShop;
+    const tokens = await createTokenPair(
+      { userId, email },
+      publicKey,
+      privateKey
+    );
+
+    await KeyTokenService.createKeyToken({
+      userId: foundShop._id,
+      refreshToken: tokens.refreshToken,
+      publicKey,
+      privateKey,
+    });
+
+    return {
+      shop: getInfoData({
+        fields: ["_id", "name", "email"],
+        object: foundShop,
+      }),
+      tokens,
+    };
+  };
+
   static signUp = async ({ name, email, password }) => {
     try {
       // step 1:check email exists
@@ -51,8 +86,6 @@ class AccessService {
         const privateKey = crypto.randomBytes(64).toString("hex");
         const publicKey = crypto.randomBytes(64).toString("hex");
 
-        console.log({ privateKey, publicKey }); // save collection keyStore
-
         const keyStore = await KeyTokenService.createKeyToken({
           userId: newShop._id,
           publicKey,
@@ -67,6 +100,7 @@ class AccessService {
         }
 
         // const publicKeyObject = crypto.createPublicKey(publicKey);
+        console.log({ publicKey, privateKey });
 
         //created token pair
         const tokens = await createTokenPair(
