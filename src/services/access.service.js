@@ -4,9 +4,13 @@ const shopModel = require("../models/shop.model");
 const bcrypt = require("bcrypt");
 const crypto = require("node:crypto");
 const KeyTokenService = require("./keyToken.service");
-const { createTokenPair } = require("../auth/authUtils");
+const { createTokenPair, verifyJWT } = require("../auth/authUtils");
 const { getInfoData } = require("../utils");
-const { BadRequestError, AuthFailureError } = require("../core/error.response");
+const {
+  BadRequestError,
+  AuthFailureError,
+  ForbiddenError,
+} = require("../core/error.response");
 const { findByEmail } = require("./shop.service");
 
 const RoleShop = {
@@ -17,6 +21,64 @@ const RoleShop = {
 };
 
 class AccessService {
+  /*
+    check this token used ?
+  */
+  static handlerRefreshToken = async (refreshToken) => {
+    //check xem token đã đc sử dụng chưa
+    const foundToken = await KeyTokenService.findByRefreshTokenUsed(
+      refreshToken
+    );
+    // nếu có
+    console.log("lol", foundToken);
+    if (foundToken) {
+      // decode xem mày là thằng nào ?
+      const { userId, email } = await verifyJWT(
+        refreshToken,
+        foundToken.privateKey
+      );
+      // xóa tát cả token trong keystore
+      await KeyTokenService.deleteKeyById();
+      throw new ForbiddenError("something wrong happen !! pls re_login");
+    }
+
+    const holderToken = await KeyTokenService.findByRefreshToken(refreshToken);
+    if (!holderToken) throw new AuthFailureError(" Shop not registered 1");
+
+    // verify Token
+    const { userId, email } = await verifyJWT(
+      refreshToken,
+      holderToken.privateKey
+    );
+    console.log("[2]--", { userId, email });
+
+    //check userId
+    const foundShop = await findByEmail({ email });
+    if (!foundShop) throw new AuthFailureError(" Shop not registered 2");
+
+    // create 1 cặp token mới
+    const tokens = await createTokenPair(
+      { userId, email },
+      holderToken.publicKey,
+      holderToken.privateKey
+    );
+
+    //update token
+    await holderToken.updateOne({
+      $set: {
+        refreshToken: tokens.refreshToken,
+      },
+      $addToSet: {
+        refreshTokensUsed: refreshToken, // đã được sử dụng để lấy token mới rồi
+      },
+    });
+
+    return {
+      user: { userId, email },
+      tokens,
+    };
+  };
+
   static logout = async (keyStore) => {
     const delKey = await KeyTokenService.removeKeyById(keyStore._id);
     return delKey;
